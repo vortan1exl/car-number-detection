@@ -3,6 +3,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from ultralytics import YOLO
 import re
+from kafka import KafkaProducer
+import json
+from datetime import datetime
 
 VIDEO_INPUT_PATH = './cars/test.mp4'
 VIDEO_OUTPUT_PATH = './output_video.mp4'
@@ -48,6 +51,7 @@ class СarPlateDetect():
     def detect_number_from_img(self):
         model = YOLO(self.YOLO_PATH)
         carplate_haar_cascade = cv2.CascadeClassifier(self.HAAR_CASCADE_PATH)
+        kafka_producer = CarPlateKafkaProducer()
         carplate_img_rgb = self.open_img(self.IMAGE_PATH)
 
         carplate_extract_img = self.carplate_extract(carplate_img_rgb, carplate_haar_cascade)
@@ -77,11 +81,17 @@ class СarPlateDetect():
         for x1, char in characters:
             plate_number += char
 
-        print('Номер автомобиля:', plate_number)
+        if re.match(self.pattern, plate_number.upper()):
+            print('Номер автомобиля:', plate_number)
+            kafka_producer.send_plate(plate_number)
+
+            
         return plate_number
 
     def process_video(self,video_path, output_path):
-        carplate = list()
+        carplate = list()  
+        kafka_producer = CarPlateKafkaProducer()
+
         
         model = YOLO(self.YOLO_PATH)
 
@@ -140,14 +150,37 @@ class СarPlateDetect():
 
                 if plate_number not in carplate:
                     carplate.append(plate_number)
-                    
+                    kafka_producer.send_plate(plate_number)
+
+
                 out.write(frame)
                 
         cap.release()
         out.release()
+        kafka_producer.close()
         print(f"Обработка завершена. Выходное видео сохранено как: {output_path}")
         return carplate
 
+class CarPlateKafkaProducer:
+    def __init__(self, kafka_bootstrap_servers='host.docker.internal:9092', topic='car-plates'):
+        self.producer = KafkaProducer(
+            bootstrap_servers=kafka_bootstrap_servers,
+            value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode('utf-8')
+        )
+        self.topic = topic
+
+    def send_plate(self, plate_number):
+        message = {
+            'plate': plate_number,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        self.producer.send(self.topic, value=message)
+        print(f"[Kafka] Отправлено: {message}")
+
+    def close(self):
+        self.producer.flush()
+        self.producer.close()
+
 if __name__ == '__main__':
     print(СarPlateDetect().detect_number_from_img())
-    print(СarPlateDetect().process_video(VIDEO_INPUT_PATH, VIDEO_OUTPUT_PATH))
+    #print(СarPlateDetect().process_video(VIDEO_INPUT_PATH, VIDEO_OUTPUT_PATH))
